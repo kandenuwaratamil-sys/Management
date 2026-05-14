@@ -1,0 +1,120 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Admin check: check if UID exists in /admins collection
+    function isAdmin() { 
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)); 
+    }
+    
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'createdAt']) 
+        && data.keys().size() == 5
+        && data.uid == request.auth.uid
+        && data.name is string && data.name.size() <= 100
+        && data.email is string && data.email.size() <= 100
+        && data.role in ['admin', 'teacher', 'student']
+        && data.createdAt == request.time;
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['id', 'name', 'grade', 'indexNumber', 'addedBy', 'createdAt'])
+        && data.keys().size() == 6
+        && data.id is string && data.id.size() <= 100
+        && data.name is string && data.name.size() <= 100
+        && data.grade is string && data.grade.size() <= 20
+        && data.indexNumber is string && data.indexNumber.size() <= 50
+        && data.addedBy == request.auth.uid
+        && data.createdAt == request.time;
+    }
+
+    function isValidTeacher(data) {
+       return data.keys().hasAll(['id', 'name', 'subject', 'employeeId', 'addedBy', 'createdAt'])
+        && data.keys().size() == 6
+        && data.id is string && data.id.size() <= 100
+        && data.name is string && data.name.size() <= 100
+        && data.subject is string && data.subject.size() <= 100
+        && data.employeeId is string && data.employeeId.size() <= 50
+        && data.addedBy == request.auth.uid
+        && data.createdAt == request.time;
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['userId', 'userName', 'userType', 'status', 'date', 'markedBy', 'timestamp'])
+        && data.userId is string && data.userId.size() <= 128
+        && data.userName is string && data.userName.size() <= 100
+        && data.userType in ['student', 'teacher']
+        && data.status in ['present', 'absent']
+        && data.date is string && data.date.size() == 10
+        && data.markedBy == request.auth.uid
+        && data.timestamp == request.time;
+    }
+
+    // --- Rules ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      // Allow users to create their own initial profile if it doesn't exist
+      allow create: if isSignedIn() && userId == request.auth.uid && isValidUser(incoming());
+      // Only admins can change roles
+      allow update: if isSignedIn() && isAdmin() && isValidUser(incoming()) && incoming().role == existing().role;
+    }
+
+    match /students/{studentId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() && isValidId(studentId) && isValidStudent(incoming());
+      allow update: if isAdmin() && isValidId(studentId) && isValidStudent(incoming()) && incoming().id == existing().id;
+      allow delete: if isAdmin();
+    }
+
+    match /teachers/{teacherId} {
+      allow read: if isSignedIn();
+      allow create: if isAdmin() && isValidId(teacherId) && isValidTeacher(incoming());
+      allow update: if isAdmin() && isValidId(teacherId) && isValidTeacher(incoming()) && incoming().id == existing().id;
+      allow delete: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isSignedIn();
+      allow create: if (isAdmin() || (isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['teacher', 'admin'])) 
+                    && isValidId(attendanceId) && isValidAttendance(incoming());
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /terms/{termId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if false; 
+    }
+    
+    match /test/{testId} {
+      allow read: if true;
+    }
+  }
+}
